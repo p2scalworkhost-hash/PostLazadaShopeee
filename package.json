@@ -1,0 +1,14 @@
+{
+  "name": "tiktok-fetcher-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker สำหรับดึงคลิป TikTok และเก็บใน R2",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy",
+    "create-bucket": "npx wrangler r2 bucket create tiktok-clips"
+  },
+  "devDependencies": {
+    "wrangler": "^3.99.0"
+  }
+}

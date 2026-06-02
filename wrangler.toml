@@ -1,0 +1,12 @@
+name = "tiktok-fetcher"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# ─── R2 Bucket Binding ───
+[[r2_buckets]]
+binding = "CLIPS_BUCKET"
+bucket_name = "tiktok-clips"
+
+# ─── CORS: ใส่ domain ของคุณที่นี่ (หรือ * สำหรับ test) ───
+[vars]
+ALLOWED_ORIGIN = "*"
