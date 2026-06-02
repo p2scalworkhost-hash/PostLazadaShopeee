@@ -901,6 +901,7 @@ async function handleScrapeProduct(request) {
 
     const html = await res.text();
     const finalProductUrl = res.url || productUrl;
+    const shopeeCanonicalUrl = buildShopeeCanonicalProductUrl(finalProductUrl || productUrl) || '';
     let imageUrl = '';
     let imageUrls = [];
 
@@ -965,9 +966,13 @@ async function handleScrapeProduct(request) {
     // Shopee exposes product preview images to social crawlers even when the app
     // shell/API path is blocked by anti-bot checks.
     imageUrls = await scrapeShopeeOpenGraphImages(finalProductUrl || productUrl);
+    if (!imageUrls.length && shopeeCanonicalUrl) {
+      imageUrls = await scrapeShopeeOpenGraphImages(shopeeCanonicalUrl);
+    }
     imageUrl = imageUrls[0] || '';
     if (!imageUrl) {
-      imageUrl = await scrapeShopeeProductImage(finalProductUrl, html);
+      imageUrls = await scrapeShopeeProductImages(finalProductUrl || productUrl, html);
+      imageUrl = imageUrls[0] || '';
     }
 
     const jsonLdReg = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -1047,7 +1052,7 @@ async function handleScrapeProduct(request) {
       success: true,
       imageUrl: imageUrl || '',
       imageUrls: imageUrls.length ? imageUrls : (imageUrl ? [imageUrl] : []),
-      resolvedProductUrl: finalProductUrl || productUrl
+      resolvedProductUrl: shopeeCanonicalUrl || finalProductUrl || productUrl
     });
 
   } catch (err) {
@@ -1073,6 +1078,21 @@ function parseShopeeItemIds(productUrl) {
   }
 
   return null;
+}
+
+function buildShopeeCanonicalProductUrl(productUrl) {
+  const ids = parseShopeeItemIds(productUrl);
+  if (!ids) return '';
+
+  try {
+    const current = new URL(productUrl);
+    if (/\/product\/\d+\/\d+/i.test(current.pathname)) {
+      return current.origin + current.pathname;
+    }
+    return `${current.origin}/product/${ids.shopid}/${ids.itemid}`;
+  } catch (e) {
+    return `https://shopee.co.th/product/${ids.shopid}/${ids.itemid}`;
+  }
 }
 
 function extractMetaContent(html, propertyName) {
@@ -1185,6 +1205,10 @@ function buildShopeeImageUrl(imageId, productUrl) {
 }
 
 function pickShopeeImageFromData(data, productUrl) {
+  return pickShopeeImagesFromData(data, productUrl)[0] || '';
+}
+
+function pickShopeeImagesFromData(data, productUrl) {
   const item = data?.data?.item || data?.data || data?.item || data;
   const candidates = [];
 
@@ -1202,12 +1226,11 @@ function pickShopeeImageFromData(data, productUrl) {
     }
   }
 
-  for (const candidate of candidates) {
-    const imageUrl = buildShopeeImageUrl(candidate, productUrl);
-    if (imageUrl) return imageUrl;
-  }
-
-  return '';
+  return Array.from(new Set(
+    candidates
+      .map(candidate => buildShopeeImageUrl(candidate, productUrl))
+      .filter(Boolean)
+  )).slice(0, 10);
 }
 
 function pickShopeeImageFromHtml(html, productUrl) {
@@ -1233,7 +1256,12 @@ function pickShopeeImageFromHtml(html, productUrl) {
 }
 
 async function scrapeShopeeProductImage(productUrl, html) {
-  if (!productUrl.includes('shopee') && !html.includes('shopee')) return '';
+  const images = await scrapeShopeeProductImages(productUrl, html);
+  return images[0] || '';
+}
+
+async function scrapeShopeeProductImages(productUrl, html) {
+  if (!productUrl.includes('shopee') && !html.includes('shopee')) return [];
 
   const ids = parseShopeeItemIds(productUrl);
   if (ids) {
@@ -1253,13 +1281,14 @@ async function scrapeShopeeProductImage(productUrl, html) {
 
       if (apiRes.ok) {
         const data = await apiRes.json();
-        const imageUrl = pickShopeeImageFromData(data, productUrl);
-        if (imageUrl) return imageUrl;
+        const images = pickShopeeImagesFromData(data, productUrl);
+        if (images.length) return images;
       }
     } catch (e) {
       console.warn('Shopee item API scrape failed:', e?.message || e);
     }
   }
 
-  return pickShopeeImageFromHtml(html, productUrl);
+  const imageUrl = pickShopeeImageFromHtml(html, productUrl);
+  return imageUrl ? [imageUrl] : [];
 }
