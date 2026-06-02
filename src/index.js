@@ -941,7 +941,12 @@ async function handleScrapeProduct(request) {
     function cleanAndFilterImages(matches) {
       if (!matches) return [];
       const cleanUrls = matches.map(url => {
-        let clean = url.replace(/&amp;/g, '&').replace(/\\u002F/g, '/').replace(/\\/g, '');
+        let clean = String(url)
+          .replace(/&amp;/g, '&')
+          .replace(/\\u002F/g, '/')
+          .replace(/\\\//g, '/')
+          .replace(/\\/g, '')
+          .replace(/["'\]\[{}),;]+$/g, '');
         if (clean.startsWith('//')) {
           clean = 'https:' + clean;
         }
@@ -950,6 +955,7 @@ async function handleScrapeProduct(request) {
 
       return Array.from(new Set(cleanUrls)).filter(url => {
         if (!url || (!url.startsWith('http') && !url.startsWith('//'))) return false;
+        if (/sprite|placeholder|loading|blank|avatar|badge|icon|logo|favicon|lzd-img-global|\/g\/tps\//i.test(url)) return false;
         
         // ตรวจสอบคีย์ของรูปภาพเพื่อทำการคัดออกถ้าเป็นภาพวิดีโอปก
         for (const cover of videoCovers) {
@@ -961,13 +967,32 @@ async function handleScrapeProduct(request) {
       });
     }
 
+    function mergeImageUrls(...groups) {
+      const merged = [];
+      for (const group of groups) {
+        for (const url of cleanAndFilterImages(group || [])) {
+          if (!merged.includes(url)) merged.push(url);
+          if (merged.length >= 10) return merged;
+        }
+      }
+      return merged;
+    }
+
     // ─── STEP B: STRATEGY 1 - แกะจาก JSON-LD Product Schema (SEO Data คลีนสุด ไม่มีวิดีโอ) ───
     // Shopee exposes product preview images to social crawlers even when the app
     // shell/API path is blocked by anti-bot checks.
-    imageUrls = await scrapeShopeeOpenGraphImages(finalProductUrl || productUrl);
-    imageUrl = imageUrls[0] || '';
-    if (!imageUrl) {
-      imageUrl = await scrapeShopeeProductImage(finalProductUrl, html);
+    const isShopeeProduct = finalProductUrl.includes('shopee') || productUrl.includes('shopee') || html.includes('shopee');
+    const isLazadaProduct = finalProductUrl.includes('lazada') || productUrl.includes('lazada') || html.includes('lazada');
+
+    if (isShopeeProduct) {
+      const shopeeCanonicalUrl = buildShopeeCanonicalProductUrl(finalProductUrl || productUrl);
+      const directShopeeImages = await scrapeShopeeOpenGraphImages(finalProductUrl || productUrl);
+      const canonicalShopeeImages = shopeeCanonicalUrl ? await scrapeShopeeOpenGraphImages(shopeeCanonicalUrl) : [];
+      imageUrls = mergeImageUrls(directShopeeImages, canonicalShopeeImages);
+      imageUrl = imageUrls[0] || '';
+      if (!imageUrl) {
+        imageUrl = await scrapeShopeeProductImage(shopeeCanonicalUrl || finalProductUrl, html);
+      }
     }
 
     const jsonLdReg = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -994,28 +1019,32 @@ async function handleScrapeProduct(request) {
 
     const filteredJsonLd = cleanAndFilterImages(jsonLdImages);
     if (filteredJsonLd.length > 0) {
-      imageUrl = filteredJsonLd.length > 1 ? filteredJsonLd[1] : filteredJsonLd[0];
+      imageUrls = mergeImageUrls(imageUrls, filteredJsonLd);
+      imageUrl = imageUrl || imageUrls[0] || filteredJsonLd[0];
     }
 
     // ─── STEP C: STRATEGY 2 - แกะจากแพลตฟอร์ม CDN (Shopee / Lazada) ───
     
     // Shopee CDN
-    if (!imageUrl && (finalProductUrl.includes('shopee') || productUrl.includes('shopee') || html.includes('shopee'))) {
+    if (isShopeeProduct) {
       const shopeeCdnReg = /(?:https?:)?(?:\\?\/\\?\/)(?:down-[a-z]{2}|cf)\.img\.susercontent\.com\\?\/file\\?\/[a-zA-Z0-9_-]+/g;
       const shopeeMatches = html.match(shopeeCdnReg);
       const filteredShopee = cleanAndFilterImages(shopeeMatches);
       if (filteredShopee.length > 0) {
-        imageUrl = filteredShopee.length > 1 ? filteredShopee[1] : filteredShopee[0];
+        imageUrls = mergeImageUrls(imageUrls, filteredShopee);
+        imageUrl = imageUrl || imageUrls[0] || filteredShopee[0];
       }
     }
 
     // Lazada CDN
-    if (!imageUrl && (finalProductUrl.includes('lazada') || productUrl.includes('lazada') || html.includes('lazada'))) {
-      const slaticReg = /(\/\/sg-live-[^\s"']+\.slatic\.net\/p\/[^\s"']+)/g;
+    if (isLazadaProduct) {
+      const lazadaImages = extractLazadaProductImagesFromHtml(html);
+      const slaticReg = /(?:https?:)?(?:\\?\/\\?\/)[^"'\s\\]+\.slatic\.net\/p\/[^"'\s\\<>,]+/g;
       const slaticMatches = html.match(slaticReg);
       const filteredSlatic = cleanAndFilterImages(slaticMatches);
-      if (filteredSlatic.length > 0) {
-        imageUrl = filteredSlatic.length > 1 ? filteredSlatic[1] : filteredSlatic[0];
+      imageUrls = mergeImageUrls(imageUrls, lazadaImages, filteredSlatic);
+      if (imageUrls.length > 0) {
+        imageUrl = imageUrl || imageUrls[0];
       }
     }
 
@@ -1031,7 +1060,8 @@ async function handleScrapeProduct(request) {
 
       const filteredOg = cleanAndFilterImages(ogMatches);
       if (filteredOg.length > 0) {
-        imageUrl = filteredOg[0];
+        imageUrls = mergeImageUrls(imageUrls, filteredOg);
+        imageUrl = imageUrl || imageUrls[0] || filteredOg[0];
       }
     }
 
@@ -1047,7 +1077,7 @@ async function handleScrapeProduct(request) {
       success: true,
       imageUrl: imageUrl || '',
       imageUrls: imageUrls.length ? imageUrls : (imageUrl ? [imageUrl] : []),
-      resolvedProductUrl: finalProductUrl || productUrl
+      resolvedProductUrl: buildShopeeCanonicalProductUrl(finalProductUrl || productUrl) || finalProductUrl || productUrl
     });
 
   } catch (err) {
@@ -1073,6 +1103,58 @@ function parseShopeeItemIds(productUrl) {
   }
 
   return null;
+}
+
+function buildShopeeCanonicalProductUrl(productUrl) {
+  if (!productUrl || !productUrl.includes('shopee')) return '';
+  const ids = parseShopeeItemIds(productUrl);
+  if (!ids) return '';
+
+  try {
+    const source = new URL(productUrl);
+    return `${source.origin}/product/${ids.shopid}/${ids.itemid}`;
+  } catch (e) {
+    return `https://shopee.co.th/product/${ids.shopid}/${ids.itemid}`;
+  }
+}
+
+function normalizeLazadaImageUrl(value) {
+  if (!value || typeof value !== 'string') return '';
+  let url = value
+    .replace(/&amp;/g, '&')
+    .replace(/\\u002F/g, '/')
+    .replace(/\\\//g, '/')
+    .replace(/\\/g, '')
+    .replace(/["'\]\[{}),;]+$/g, '')
+    .trim();
+
+  if (url.startsWith('//')) url = `https:${url}`;
+  if (!/^https?:\/\/[^"'\s]+\.slatic\.net\/p\//i.test(url)) return '';
+  if (/sprite|placeholder|loading|blank|avatar|badge|icon|logo|favicon|lzd-img-global|\/g\/tps\//i.test(url)) return '';
+  return url;
+}
+
+function extractLazadaProductImagesFromHtml(html) {
+  const candidates = [];
+  const push = value => {
+    const normalized = normalizeLazadaImageUrl(value);
+    if (normalized) candidates.push(normalized);
+  };
+
+  const directReg = /(?:https?:)?(?:\\?\/\\?\/)[^"'\s\\]+\.slatic\.net\/p\/[^"'\s\\<>,]+/g;
+  let match;
+  while ((match = directReg.exec(html)) !== null) {
+    push(match[0]);
+  }
+
+  const imageArrayReg = /"(?:image|images|gallery|imageUrl|mainImage|productImages)"\s*:\s*(\[[^\]]+\]|"[^"]+")/gi;
+  while ((match = imageArrayReg.exec(html)) !== null) {
+    const block = match[1];
+    const urlMatches = block.match(/(?:https?:)?(?:\\?\/\\?\/)[^"'\s\\]+\.slatic\.net\/p\/[^"'\s\\<>,]+/g) || [];
+    for (const url of urlMatches) push(url);
+  }
+
+  return Array.from(new Set(candidates)).slice(0, 10);
 }
 
 function extractMetaContent(html, propertyName) {
@@ -1113,7 +1195,7 @@ async function scrapeShopeeOpenGraphImages(productUrl) {
       redirect: 'follow'
     });
 
-    if (!res.ok) return '';
+    if (!res.ok) return [];
     const html = await res.text();
     const images = extractShopeeProductImagesFromHtml(html);
     if (images.length) return images.slice(0, 10);
@@ -1146,8 +1228,9 @@ function extractShopeeProductImagesFromHtml(html) {
   }
 
   const uniqueCandidates = Array.from(new Set(candidates));
-  const productCandidates = uniqueCandidates.filter(url => !/\/th-111342(?:58|16)-|\/th-11134207-81zt/i.test(url));
-  return (productCandidates.length ? productCandidates : uniqueCandidates.slice(1).concat(uniqueCandidates.slice(0, 1))).slice(0, 10);
+  const lowerPriorityCandidates = uniqueCandidates.filter(url => /\/th-111342(?:58|16)-|\/th-11134207-81zt/i.test(url));
+  const productCandidates = uniqueCandidates.filter(url => !lowerPriorityCandidates.includes(url));
+  return productCandidates.concat(lowerPriorityCandidates).slice(0, 10);
 }
 
 function getShopeeCountryCode(productUrl) {
