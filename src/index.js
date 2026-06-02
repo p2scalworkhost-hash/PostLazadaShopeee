@@ -964,7 +964,7 @@ async function handleScrapeProduct(request) {
     // ─── STEP B: STRATEGY 1 - แกะจาก JSON-LD Product Schema (SEO Data คลีนสุด ไม่มีวิดีโอ) ───
     // Shopee exposes product preview images to social crawlers even when the app
     // shell/API path is blocked by anti-bot checks.
-    imageUrls = await scrapeShopeeOpenGraphImages(productUrl);
+    imageUrls = await scrapeShopeeOpenGraphImages(finalProductUrl || productUrl);
     imageUrl = imageUrls[0] || '';
     if (!imageUrl) {
       imageUrl = await scrapeShopeeProductImage(finalProductUrl, html);
@@ -1046,7 +1046,8 @@ async function handleScrapeProduct(request) {
     return json({
       success: true,
       imageUrl: imageUrl || '',
-      imageUrls: imageUrls.length ? imageUrls : (imageUrl ? [imageUrl] : [])
+      imageUrls: imageUrls.length ? imageUrls : (imageUrl ? [imageUrl] : []),
+      resolvedProductUrl: finalProductUrl || productUrl
     });
 
   } catch (err) {
